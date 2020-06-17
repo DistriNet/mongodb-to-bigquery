@@ -1,0 +1,5 @@
+venv/
+
+*.json
+*.json.gz
+
