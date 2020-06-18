@@ -3,3 +3,4 @@ venv/
 *.json
 *.json.gz
 
+/.idea/
