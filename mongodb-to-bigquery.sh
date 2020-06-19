@@ -3,6 +3,7 @@
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 BROWN='\033[0;33m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 DELETE_FILE=false
@@ -35,7 +36,7 @@ help () {
   printf "\t-c/--google-cloud-storage <bucket>\tStage data in given Google Cloud Storage bucket before loading into BigQuery\n"
   printf "\t-p/--time-partitioning <field>\t\tSet time partioning on given field\n"
 }
-die() { echo "$*" 1>&2 ; exit 1; }
+die() { echo -e "$*" 1>&2 ; exit 1; }
 
 ###################################### Option parsing ######################################
 while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org/BashFAQ/035
@@ -131,6 +132,8 @@ BQ_PROJECTID=$3
 BQ_DATASET=$4
 BQ_TABLE=$5
 
+BQ_LOCATION="europe-west2"
+
 if [ "${USE_LOCAL_FILE}" = true ]; then
   DATA_FILENAME="${LOCAL_FILE}"
 else
@@ -156,7 +159,6 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
   if [ "${TEST_MODE}" = true ]; then
     MONGO_COMMAND+="--limit 10000"
   fi
-  echo $MONGO_COMMAND
   # BigQuery doesn't accept fields with dollar signs
   MONGO_COMMAND+=" | sed 's/{\"\$date\":\"\([^}]*\)\"}/\"\1\"/g;s/{\"\$oid\":\"\([^}]*\)\"}/\"\1\"/g'"
   # gzip to reduce data size
@@ -165,51 +167,57 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
   # https://cloud.google.com/bigquery/docs/loading-data#loading_compressed_and_uncompressed_data
   # https://www.oreilly.com/library/view/google-bigquery-the/9781492044451/ch04.html
   MONGO_COMMAND+="> ${DATA_FILENAME}"
-  eval "$MONGO_COMMAND"
+  eval "$MONGO_COMMAND" || die "${RED}[-] Failed to retrieve data from MongoDB! ${NC}"
+  LAST_RECORD=$(mongoexport --uri="${MONGO_URI}" --collection="${MONGO_COLLECTION}" --type json --sort='{_id:-1}' --limit=1 2>/dev/null | jq -r '._id."$oid"')
+  LAST_TIMESTAMP=$(date +%s)
+  echo -e "${CYAN}[>] Last record: ${LAST_RECORD} ; timestamp: ${LAST_TIMESTAMP} ${NC}"
 else
   if [ ! -f "${DATA_FILENAME}" ]; then
-    die 'ERROR: data file does not exist'
+    die "${RED}[-] Data file does not exist ${NC}"
   fi
   echo -e "${BROWN}[*] Reading data from local file ${DATA_FILENAME} ${NC}"
 fi
 echo -e "${GREEN}[+] Data retrieved successfully! ${NC}"
 
-# TODO tail json file to retrieve last ID? not necessarily sorted!
 # TODO split file into smaller chunks? query in smaller chunks?
 
 if [ $USE_LOCAL_SCHEMA_INFERENCE = true ]; then
   # infer BigQuery schema across whole file (not 100 record sample) using https://pypi.org/project/bigquery-schema-generator/
   echo -e "${BROWN}[*] Generating BigQuery schema ${NC}"
-  zcat "${DATA_FILENAME}" | venv/bin/generate-schema >"${SCHEMA_FILENAME}"
+  zcat "${DATA_FILENAME}" | venv/bin/generate-schema >"${SCHEMA_FILENAME}" || die "${RED}[-] Failed to generate schema! ${NC}"
   # TODO `head` to make local inference faster?
 fi
-if [ ! -f "${SCHEMA_FILENAME}" ]; then
-  die 'ERROR: schema file does not exist'
+if [ ! -f "${SCHEMA_FILENAME}" ] && [ "${USE_BIGQUERY_SCHEMA_INFERENCE}" = false ]; then
+  die "${RED}[-] Schema file does not exist ${NC}"
 fi
 echo -e "${GREEN}[+] BigQuery schema available! ${NC}"
-
-# TODO make dataset if necessary?
-# bq --location=EU mk --dataset ${BQ_PROJECTID}:${BQ_DATASET}
 
 if [ $USE_GOOGLE_CLOUD_STORAGE = true ]; then
   echo -e "${BROWN}[*] Uploading data to Google Cloud Storage ${NC}"
   GOOGLE_CLOUD_STORAGE_LOCATION="gs://${GOOGLE_CLOUD_STORAGE_BUCKET}/${BQ_DATASET}/${BQ_TABLE}/${DATA_FILENAME}"
-  gsutil cp "${DATA_FILENAME}" "${GOOGLE_CLOUD_STORAGE_LOCATION}"
+  gsutil cp "${DATA_FILENAME}" "${GOOGLE_CLOUD_STORAGE_LOCATION}" || die "${RED}[-] Failed to upload data! ${NC}"
   echo -e "${GREEN}[+] Data uploaded to Google Cloud Storage! ${NC}"
 fi
 # Maximum file size for compressed JSON is 4 GB (https://cloud.google.com/bigquery/quotas#load_jobs)
+
+# Make dataset if necessary
+if ! bq show "${BQ_PROJECTID}":"${BQ_DATASET}" > /dev/null; then
+  echo -e "${BROWN}[*] Creating BigQuery dataset ${BQ_PROJECTID}:${BQ_DATASET} ${NC}"
+  bq --location=${BQ_LOCATION} mk --dataset "${BQ_PROJECTID}":"${BQ_DATASET}" || die "${RED}[-] Failed to create dataset! ${NC}"
+  echo -e "${GREEN}[+] Created dataset ${BQ_PROJECTID}:${BQ_DATASET} ! ${NC}"
+fi
 
 if [ $USE_TIME_PARTITIONING = true ]; then
   echo -e "${BROWN}[*] Creating time partitioned table ${NC}"
   BQ_TABLE_CREATION_COMMAND="bq mk -t --schema ${SCHEMA_FILENAME} --time_partitioning_field ${TIME_PARTITIONING_FIELD} "
   BQ_TABLE_CREATION_COMMAND+="--time_partitioning_type DAY --project_id=${BQ_PROJECTID} ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} "
-  eval "${BQ_TABLE_CREATION_COMMAND}"
+  eval "${BQ_TABLE_CREATION_COMMAND}" || die "${RED}[-] Failed to create table! ${NC}"
   echo -e "${GREEN}[+] Table created! ${NC}"
 fi
 
 echo -e "${BROWN}[*] Loading data into BigQuery table ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} ${NC}"
 
-BQ_COMMAND="bq load --source_format NEWLINE_DELIMITED_JSON --ignore_unknown_values "
+BQ_COMMAND="bq --location=${BQ_LOCATION} load --source_format NEWLINE_DELIMITED_JSON --ignore_unknown_values "
 if [ $USE_BIGQUERY_SCHEMA_INFERENCE = true ]; then
   BQ_COMMAND+="--autodetect "
 else
@@ -221,26 +229,32 @@ if [ $USE_GOOGLE_CLOUD_STORAGE = true ]; then
 else
   BQ_COMMAND+="${DATA_FILENAME}"
 fi
-eval "${BQ_COMMAND}"
-
-echo -e "${GREEN}[+] Data loaded into BigQuery table ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} ! ${NC}"
+if eval "${BQ_COMMAND}"; then
+  echo -e "${GREEN}[+] Data loaded into BigQuery table ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} ! ${NC}"
+else
+  die "${RED}[-] Failed to load data into BigQuery table ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} ! ${NC}"
+fi
 
 if [ $USE_GOOGLE_CLOUD_STORAGE = true ]; then
   echo -e "${BROWN}[*] Deleting data from Google Cloud Storage ${NC}"
-  gsutil rm "${GOOGLE_CLOUD_STORAGE_LOCATION}"
-  echo -e "${GREEN}[+] Data deleted from Google Cloud Storage! ${NC}"
+  if gsutil rm "${GOOGLE_CLOUD_STORAGE_LOCATION}"; then
+    echo -e "${GREEN}[+] Data deleted from Google Cloud Storage! ${NC}"
+  else
+    echo -e "${RED}[-] Failed to delete data from Google Cloud Storage! ${NC}"
+  fi
 fi
 
 if [ $DELETE_FILE = true ]; then
   echo -e "${BROWN}[*] Deleting data ${NC}"
-  rm "${DATA_FILENAME}"
+  if rm "${DATA_FILENAME}"; then
+    echo -e "${GREEN}[+] Data deleted! ${NC}"
+  else
+    echo -e "${RED}[-] Failed to delete data! ${NC}"
+  fi
 #  if [ $USE_BIGQUERY_SCHEMA_INFERENCE = false ]; then
 #    rm "${SCHEMA_FILENAME}"
 #  fi
-  echo -e "${GREEN}[*] Data deleted! ${NC}"
 fi
-
-# TODO save timestamp/ObjectID of last Mongo record? for incremental upload
 
 #  https://medium.com/google-cloud/export-load-job-with-mongodb-bigquery-part-i-64a00eb5266b
 #  https://hevodata.com/blog/mongodb-to-bigquery-etl-stream-data/
