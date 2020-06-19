@@ -9,6 +9,7 @@ NC='\033[0m' # No Color
 DELETE_FILE=false
 USE_LOCAL_FILE=false
 LOCAL_FILE=
+DATA_DIR="."
 USE_GOOGLE_CLOUD_STORAGE=false
 GOOGLE_CLOUD_STORAGE_BUCKET=
 USE_BIGQUERY_SCHEMA_INFERENCE=false
@@ -25,6 +26,7 @@ help () {
   printf "Options:\n"
 
   printf "\t-f/--data-file <file>\t\t\tUse a local JSON file instead of retrieving data from MongoDB\n"
+  printf "\t-r/--data-dir <dir>\t\tDirectory to store (temporary) data file\n"
   printf "\t* Limit data retrieval from MongoDB:
   \t    -q/--query-file <file>\t\tUse query in provided file
   \t    -i/--incremental-id <id>\t\tOnly retrieve records after the given ObjectID
@@ -35,6 +37,8 @@ help () {
   \t    -s/--schema-file <file>\t\tUse schema in provided file\n"
   printf "\t-c/--google-cloud-storage <bucket>\tStage data in given Google Cloud Storage bucket before loading into BigQuery\n"
   printf "\t-p/--time-partitioning <field>\t\tSet time partioning on given field\n"
+  printf "Example:\n"
+  printf "\tmongodb-to-bigquery.sh \"mongodb://user:pass@localhost:27017/db\" mycollection myproject mydataset mytable\n"
 }
 die() { echo -e "$*" 1>&2 ; exit 1; }
 
@@ -55,6 +59,14 @@ while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org
       shift
     else
       die 'ERROR: "--data-file" requires a non-empty option argument.'
+    fi
+    ;;
+  -r | --data-dir)
+    if [ "$2" ]; then
+      DATA_DIR=$2
+      shift
+    else
+      die 'ERROR: "--data-dir" requires a non-empty option argument.'
     fi
     ;;
   -c | --google-cloud-storage)
@@ -137,16 +149,18 @@ BQ_LOCATION="europe-west2"
 if [ "${USE_LOCAL_FILE}" = true ]; then
   DATA_FILENAME="${LOCAL_FILE}"
 else
-  DATA_FILENAME="${MONGO_COLLECTION}".json.gz
+  DATA_FILENAME="${DATA_DIR}/$(echo "${MONGO_COLLECTION}" | md5sum | cut -f1 -d' ').json.gz"
 fi
 if [ "${USE_LOCAL_SCHEMA_FILE}" = true ]; then
   SCHEMA_FILENAME="${LOCAL_SCHEMA_FILE}"
 else
-  SCHEMA_FILENAME="${MONGO_COLLECTION}".schema.json
+  SCHEMA_FILENAME="${DATA_DIR}/$(echo "${MONGO_COLLECTION}" | md5sum | cut -f1 -d' ').schema.json"
 fi
 
+echo $DATA_FILENAME $SCHEMA_FILENAME
+
 if [ "${USE_LOCAL_FILE}" = false ]; then
-  echo -e "${BROWN}[*] Retrieving data from MongoDB - collection=${MONGO_COLLECTION} @ ${MONGO_URI} ${NC}"
+  echo -e "${BROWN}[*] Retrieving data from MongoDB collection=${MONGO_COLLECTION} ${NC}"
   MONGO_COMMAND="mongoexport --uri=${MONGO_URI} --collection=${MONGO_COLLECTION} --type json "
   if [ "${USE_QUERY_FILE}" = true ]; then
     MONGO_COMMAND+="--query='$(cat "${QUERY_FILE}")'"
@@ -181,6 +195,10 @@ echo -e "${GREEN}[+] Data retrieved successfully! ${NC}"
 
 # TODO split file into smaller chunks? query in smaller chunks?
 
+# TODO preprocess JSON to remove invalid keys; keys that only differ in case https://cloud.google.com/bigquery/docs/schemas#column_names
+# won't be solved by schema generator: https://github.com/bxparks/bigquery-schema-generator/issues/39
+# TODO  --sanitize_names ? (this won't be applied to the data though?)
+
 if [ $USE_LOCAL_SCHEMA_INFERENCE = true ]; then
   # infer BigQuery schema across whole file (not 100 record sample) using https://pypi.org/project/bigquery-schema-generator/
   echo -e "${BROWN}[*] Generating BigQuery schema ${NC}"
@@ -195,12 +213,14 @@ echo -e "${GREEN}[+] BigQuery schema available! ${NC}"
 if [ $USE_GOOGLE_CLOUD_STORAGE = true ]; then
   echo -e "${BROWN}[*] Uploading data to Google Cloud Storage ${NC}"
   GOOGLE_CLOUD_STORAGE_LOCATION="gs://${GOOGLE_CLOUD_STORAGE_BUCKET}/${BQ_DATASET}/${BQ_TABLE}/${DATA_FILENAME}"
-  gsutil cp "${DATA_FILENAME}" "${GOOGLE_CLOUD_STORAGE_LOCATION}" || die "${RED}[-] Failed to upload data! ${NC}"
+  gsutil -o GSUtil:parallel_composite_upload_threshold=150M cp "${DATA_FILENAME}" "${GOOGLE_CLOUD_STORAGE_LOCATION}" || die "${RED}[-] Failed to upload data! ${NC}"
   echo -e "${GREEN}[+] Data uploaded to Google Cloud Storage! ${NC}"
 fi
 # Maximum file size for compressed JSON is 4 GB (https://cloud.google.com/bigquery/quotas#load_jobs)
 
 # Make dataset if necessary
+# TODO Verify? Dataset IDs must be alphanumeric (plus underscores) and must be at most 1024 characters long.
+# TODO - or do before everything else
 if ! bq show "${BQ_PROJECTID}":"${BQ_DATASET}" > /dev/null; then
   echo -e "${BROWN}[*] Creating BigQuery dataset ${BQ_PROJECTID}:${BQ_DATASET} ${NC}"
   bq --location=${BQ_LOCATION} mk --dataset "${BQ_PROJECTID}":"${BQ_DATASET}" || die "${RED}[-] Failed to create dataset! ${NC}"
