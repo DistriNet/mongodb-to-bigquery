@@ -25,12 +25,15 @@ help () {
   printf "\tmongodb-to-bigquery.sh [OPTIONS] MONGODB_URI MONGODB_COLLECTION PROJECTID DATASET TABLE\n"
   printf "Options:\n"
 
-  printf "\t-f/--data-file <file>\t\t\tUse a local JSON file instead of retrieving data from MongoDB\n"
+  printf "\t-d/--data-file <file>\t\t\tUse a local JSON file instead of retrieving data from MongoDB\n"
   printf "\t-r/--data-dir <dir>\t\tDirectory to store (temporary) data file\n"
   printf "\t* Limit data retrieval from MongoDB:
   \t    -q/--query-file <file>\t\tUse query in provided file
   \t    -i/--incremental-id <id>\t\tOnly retrieve records after the given ObjectID
   \t    -t/--incremental-time <timestamp>\tOnly retrieve records created after the given timestamp since epoch\n"
+  printf "\t* Limit field retrieval from MongoDB:
+  \t    -f/--fields <fields>\t\tFields to include in the export
+  \t    --field-file <file>\t\tFile with fields to include in the export (1 field per line)"
   printf "\t* Schema definition:
   \t    -b/--infer-schema-bigquery\t\tLet BigQuery infer schema (on a sample of 100)
   \t    -l/--infer-schema-local\t\tInfer schema locally (on full dataset)
@@ -49,10 +52,10 @@ while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org
     help
     exit 0;
     ;;
-  -d | --delete)
+  --delete)
     DELETE_FILE=true
     ;;
-  -f | --data-file)
+  -d | --data-file)
     USE_LOCAL_FILE=true
     if [ "$2" ]; then
       LOCAL_FILE=$2
@@ -91,6 +94,24 @@ while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org
       shift
     else
       die 'ERROR: "--schema-file" requires a non-empty option argument.'
+    fi
+    ;;
+  -f | --fields)
+    USE_FIELDS=true
+    if [ "$2" ]; then
+      FIELDS=$2
+      shift
+    else
+      die 'ERROR: "--fields" requires a non-empty option argument.'
+    fi
+    ;;
+  --field-file)
+    USE_FIELD_FILE=true
+    if [ "$2" ]; then
+      FIELD_FILE=$2
+      shift
+    else
+      die 'ERROR: "--field-file" requires a non-empty option argument.'
     fi
     ;;
   -q | --query-file)
@@ -161,17 +182,25 @@ echo $DATA_FILENAME $SCHEMA_FILENAME
 
 if [ "${USE_LOCAL_FILE}" = false ]; then
   echo -e "${BROWN}[*] Retrieving data from MongoDB collection=${MONGO_COLLECTION} ${NC}"
-  MONGO_COMMAND="mongoexport --uri=${MONGO_URI} --collection=${MONGO_COLLECTION} --type json "
+  MONGO_COMMAND="mongoexport --uri=${MONGO_URI} --collection=${MONGO_COLLECTION} --type=json "
+  QUERY_STRING=""
   if [ "${USE_QUERY_FILE}" = true ]; then
-    MONGO_COMMAND+="--query='$(cat "${QUERY_FILE}")'"
+    QUERY_STRING="--query='$(cat "${QUERY_FILE}")' "
   elif [ "${USE_START_ID}" = true ]; then
-    MONGO_COMMAND+="--query='{ \"_id\": { \"\$gte\": ObjectId(\"${START_ID}\") } }'"
+    QUERY_STRING="--query='{ \"_id\": { \"\$gte\": ObjectId(\"${START_ID}\") } }' "
   elif [ "${USE_START_TIME}" = true ]; then
-    MONGO_COMMAND+="--query='{ \"_id\": { \"\$gte\": ObjectId(\"$(printf '%x\n' "${START_TIME}")0000000000000000\") } }'"
+    QUERY_STRING="--query='{ \"_id\": { \"\$gte\": ObjectId(\"$(printf '%x\n' "${START_TIME}")0000000000000000\") } }' "
     # https://stackoverflow.com/a/8753670/7391782
   fi
+  MONGO_COMMAND+=${QUERY_STRING}
+  if [ "${USE_FIELDS}" = true ]; then
+    MONGO_COMMAND+="--fields='${FIELDS}' "
+  fi
+  if [ "${USE_FIELD_FILE}" = true ]; then
+    MONGO_COMMAND+="--fieldFile=${FIELD_FILE} "
+  fi
   if [ "${TEST_MODE}" = true ]; then
-    MONGO_COMMAND+="--limit 10000"
+    MONGO_COMMAND+="--limit 10000 "
   fi
   # BigQuery doesn't accept fields with dollar signs
   MONGO_COMMAND+=" | sed 's/{\"\$date\":\"\([^}]*\)\"}/\"\1\"/g;s/{\"\$oid\":\"\([^}]*\)\"}/\"\1\"/g'"
@@ -182,7 +211,7 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
   # https://www.oreilly.com/library/view/google-bigquery-the/9781492044451/ch04.html
   MONGO_COMMAND+="> ${DATA_FILENAME}"
   eval "$MONGO_COMMAND" || die "${RED}[-] Failed to retrieve data from MongoDB! ${NC}"
-  LAST_RECORD=$(mongoexport --uri="${MONGO_URI}" --collection="${MONGO_COLLECTION}" --type json --sort='{_id:-1}' --limit=1 2>/dev/null | jq -r '._id."$oid"')
+  LAST_RECORD=$(mongoexport --uri="${MONGO_URI}" --collection="${MONGO_COLLECTION}" --type json "${QUERY_STRING}" --sort='{_id:-1}' --limit=1 2>/dev/null | jq -r '._id."$oid"')
   LAST_TIMESTAMP=$(date +%s)
   echo -e "${CYAN}[>] Last record: ${LAST_RECORD} ; timestamp: ${LAST_TIMESTAMP} ${NC}"
 else
