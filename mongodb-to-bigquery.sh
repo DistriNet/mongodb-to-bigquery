@@ -19,6 +19,7 @@ LOCAL_SCHEMA_FILE=
 USE_TIME_PARTITIONING=false
 TEST_MODE=false
 ILLEGAL_CHAR_REPLACEMENT="_"
+SANITIZE_WITH_JQ=false
 
 help () {
   printf "* Transfer MongoDB data to BigQuery *\n"
@@ -41,7 +42,8 @@ help () {
   \t    -s/--schema-file <file>\t\tUse schema in provided file\n"
   printf "\t-c/--google-cloud-storage <bucket>\tStage data in given Google Cloud Storage bucket before loading into BigQuery\n"
   printf "\t-p/--time-partitioning <field>\t\tSet time partioning on given field\n"
-  printf "\t--illegal-char-replacement <char>\tCharacter to replace illegal characters with\n"
+  printf "\t--illegal-char-replacement <char>\tCharacter to replace illegal characters with. Replacement must be letter, number or underscore\n"
+  printf "\t-z/--sanitize\t\t\t\tUse \`jq\` to sanitize column names\n"
   printf "Example:\n"
   printf "\tmongodb-to-bigquery.sh \"mongodb://user:pass@localhost:27017/db\" mycollection myproject mydataset mytable\n"
 }
@@ -160,6 +162,9 @@ while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org
       die 'ERROR: "--illegal-char-replacement" requires a non-empty option argument.'
     fi
     ;;
+  -z | --sanitize)
+    SANITIZE_WITH_JQ=true
+    ;;
   --test)
     TEST_MODE=true
     ;;
@@ -176,6 +181,17 @@ BQ_DATASET=$4
 BQ_TABLE=$5
 
 BQ_LOCATION="europe-west2"
+
+# `walk` backported from jq 1.6
+# https://github.com/stedolan/jq/issues/963#issuecomment-152783116
+JQ_WALK_FUNCTION='def walk(f):
+  . as $in
+  | if type == "object" then
+      reduce keys[] as $key
+        ( {}; . + { ($key):  ($in[$key] | walk(f)) } ) | f
+  elif type == "array" then map( walk(f) ) | f
+  else f
+  end;'
 
 if [ "${USE_LOCAL_FILE}" = true ]; then
   DATA_FILENAME="${LOCAL_FILE}"
@@ -212,9 +228,17 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
   if [ "${TEST_MODE}" = true ]; then
     MONGO_COMMAND+="--limit 10000 "
   fi
-  # BigQuery doesn't accept fields with dollar signs or dots
-  # MongoDB doesn't either: dollar signs and dots in field names are replaced by the code point strings '\u0024' and '\u002e' respectively
+  # BigQuery only accepts column names shorter than 128 characters with letters, numbers or underscores
+  #  https://cloud.google.com/bigquery/docs/schemas#column_names
+  # MongoDB doesn't accept signs and dots in field names, these are replaced by the code point strings '\u0024' and '\u002e' respectively
+  # Replace these MongoDB substitutions + unnecessary `$date` and `$oid`
   MONGO_COMMAND+=" | sed 's/{\"\$date\":\"\([^}]*\)\"}/\"\1\"/g;s/{\"\$oid\":\"\([^}]*\)\"}/\"\1\"/g;s/\\\\u0024/${ILLEGAL_CHAR_REPLACEMENT}/g;s/\\\\u002e/${ILLEGAL_CHAR_REPLACEMENT}/g;'"
+  if [ "${SANITIZE_WITH_JQ}" = true]; then
+    # Use `jq` to replace illegal characters in and truncate keys.
+    # Optional, as it is quite slow. (jq seems to compile the script, so no performance loss by including the walk function)
+    # https://stedolan.github.io/jq/manual/#walk(f) https://stackoverflow.com/a/42355383/7391782
+    MONGO_COMMAND+=" | jq '${JQ_WALK_FUNCTION} walk(if type == \"object\" then with_entries(.key |= gsub(\"[^a-zA-Z0-9_]\";\"${ILLEGAL_CHAR_REPLACEMENT}\")[0:128]) else . end )'"
+  fi
   # gzip to reduce data size
   MONGO_COMMAND+=" | gzip"
   # TODO gzip to disk for space, but upload uncompressed for faster processing?
@@ -252,7 +276,7 @@ echo -e "${GREEN}[+] BigQuery schema available! ${NC}"
 
 if [ $USE_GOOGLE_CLOUD_STORAGE = true ]; then
   echo -e "${BROWN}[*] Uploading data to Google Cloud Storage ${NC}"
-  GOOGLE_CLOUD_STORAGE_LOCATION="gs://${GOOGLE_CLOUD_STORAGE_BUCKET}/${BQ_DATASET}/${BQ_TABLE}/${DATA_FILENAME}"
+  GOOGLE_CLOUD_STORAGE_LOCATION="gs://${GOOGLE_CLOUD_STORAGE_BUCKET}/${BQ_DATASET}/${BQ_TABLE}/$(basename "${DATA_FILENAME}")"
   gsutil -o GSUtil:parallel_composite_upload_threshold=150M cp "${DATA_FILENAME}" "${GOOGLE_CLOUD_STORAGE_LOCATION}" || die "${RED}[-] Failed to upload data! ${NC}"
   echo -e "${GREEN}[+] Data uploaded to Google Cloud Storage! ${NC}"
 fi
