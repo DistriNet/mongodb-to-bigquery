@@ -18,6 +18,7 @@ USE_LOCAL_SCHEMA_FILE=false
 LOCAL_SCHEMA_FILE=
 USE_TIME_PARTITIONING=false
 TEST_MODE=false
+ILLEGAL_CHAR_REPLACEMENT="_"
 
 help () {
   printf "* Transfer MongoDB data to BigQuery *\n"
@@ -26,20 +27,21 @@ help () {
   printf "Options:\n"
 
   printf "\t-d/--data-file <file>\t\t\tUse a local JSON file instead of retrieving data from MongoDB\n"
-  printf "\t-r/--data-dir <dir>\t\tDirectory to store (temporary) data file\n"
+  printf "\t-r/--data-dir <dir>\t\t\tDirectory to store (temporary) data file\n"
   printf "\t* Limit data retrieval from MongoDB:
   \t    -q/--query-file <file>\t\tUse query in provided file
   \t    -i/--incremental-id <id>\t\tOnly retrieve records after the given ObjectID
   \t    -t/--incremental-time <timestamp>\tOnly retrieve records created after the given timestamp since epoch\n"
   printf "\t* Limit field retrieval from MongoDB:
   \t    -f/--fields <fields>\t\tFields to include in the export
-  \t    --field-file <file>\t\tFile with fields to include in the export (1 field per line)"
+  \t    --field-file <file>\t\t\tFile with fields to include in the export (1 field per line)\n"
   printf "\t* Schema definition:
   \t    -b/--infer-schema-bigquery\t\tLet BigQuery infer schema (on a sample of 100)
   \t    -l/--infer-schema-local\t\tInfer schema locally (on full dataset)
   \t    -s/--schema-file <file>\t\tUse schema in provided file\n"
   printf "\t-c/--google-cloud-storage <bucket>\tStage data in given Google Cloud Storage bucket before loading into BigQuery\n"
   printf "\t-p/--time-partitioning <field>\t\tSet time partioning on given field\n"
+  printf "\t--illegal-char-replacement <char>\tCharacter to replace illegal characters with\n"
   printf "Example:\n"
   printf "\tmongodb-to-bigquery.sh \"mongodb://user:pass@localhost:27017/db\" mycollection myproject mydataset mytable\n"
 }
@@ -150,6 +152,14 @@ while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org
       die 'ERROR: "--time-partitioning" requires a non-empty option argument.'
     fi
     ;;
+  --illegal-char-replacement)
+    if [ "$2" ]; then
+      ILLEGAL_CHAR_REPLACEMENT=$2
+      shift
+    else
+      die 'ERROR: "--illegal-char-replacement" requires a non-empty option argument.'
+    fi
+    ;;
   --test)
     TEST_MODE=true
     ;;
@@ -202,8 +212,9 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
   if [ "${TEST_MODE}" = true ]; then
     MONGO_COMMAND+="--limit 10000 "
   fi
-  # BigQuery doesn't accept fields with dollar signs
-  MONGO_COMMAND+=" | sed 's/{\"\$date\":\"\([^}]*\)\"}/\"\1\"/g;s/{\"\$oid\":\"\([^}]*\)\"}/\"\1\"/g'"
+  # BigQuery doesn't accept fields with dollar signs or dots
+  # MongoDB doesn't either: dollar signs and dots in field names are replaced by the code point strings '\u0024' and '\u002e' respectively
+  MONGO_COMMAND+=" | sed 's/{\"\$date\":\"\([^}]*\)\"}/\"\1\"/g;s/{\"\$oid\":\"\([^}]*\)\"}/\"\1\"/g;s/\\\\u0024/${ILLEGAL_CHAR_REPLACEMENT}/g;s/\\\\u002e/${ILLEGAL_CHAR_REPLACEMENT}/g;'"
   # gzip to reduce data size
   MONGO_COMMAND+=" | gzip"
   # TODO gzip to disk for space, but upload uncompressed for faster processing?
