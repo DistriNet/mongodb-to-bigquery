@@ -233,11 +233,18 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
   # MongoDB doesn't accept signs and dots in field names, these are replaced by the code point strings '\u0024' and '\u002e' respectively
   # Replace these MongoDB substitutions + unnecessary `$date` and `$oid`
   MONGO_COMMAND+=" | sed 's/{\"\$date\":\"\([^}]*\)\"}/\"\1\"/g;s/{\"\$oid\":\"\([^}]*\)\"}/\"\1\"/g;s/\\\\u0024/${ILLEGAL_CHAR_REPLACEMENT}/g;s/\\\\u002e/${ILLEGAL_CHAR_REPLACEMENT}/g;'"
+
+  # Use perl to replace illegal characters in and truncate keys. (faster than `jq`)
+  # https://stackoverflow.com/questions/40397220/regex-substitute-character-in-a-matching-substring
+  # alt: https://stackoverflow.com/questions/44536133/replace-characters-inside-a-regex-match
+  MONGO_COMMAND+=' | perl -pe '\''s/(?:\G(?!\A)|\")(?=[^\"]*\":)[A-Za-z0-9_]*\K[^a-zA-Z0-9_\"]/'"${ILLEGAL_CHAR_REPLACEMENT}"'/g'\'''
+  MONGO_COMMAND+=' | perl -pe '\''s/\"([^\"]{0,128})[^\"]*\"\:/\"$1\"\:/g'\''' # truncate
+
   if [ "${SANITIZE_WITH_JQ}" = true]; then
     # Use `jq` to replace illegal characters in and truncate keys.
-    # Optional, as it is quite slow. (jq seems to compile the script, so no performance loss by including the walk function)
+    # Optional, as it is very slow. (jq seems to compile the script, so no performance loss by including the walk function)
     # https://stedolan.github.io/jq/manual/#walk(f) https://stackoverflow.com/a/42355383/7391782
-    MONGO_COMMAND+=" | jq '${JQ_WALK_FUNCTION} walk(if type == \"object\" then with_entries(.key |= gsub(\"[^a-zA-Z0-9_]\";\"${ILLEGAL_CHAR_REPLACEMENT}\")[0:128]) else . end )'"
+    MONGO_COMMAND+=" | jq -c '${JQ_WALK_FUNCTION} walk(if type == \"object\" then with_entries(.key |= gsub(\"[^a-zA-Z0-9_]\";\"${ILLEGAL_CHAR_REPLACEMENT}\")[0:128]) else . end )'"
   fi
   # gzip to reduce data size
   MONGO_COMMAND+=" | gzip"
