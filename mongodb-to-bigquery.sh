@@ -174,6 +174,12 @@ while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org
 done
 ############################################################################################
 
+if [ "$#" -ne 5 ]; then
+    echo -e "${RED}Missing parameters.${NC}"
+    help
+    exit 1
+fi
+
 MONGO_URI=$1
 MONGO_COLLECTION=$2
 BQ_PROJECTID=$3
