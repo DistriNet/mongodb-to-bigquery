@@ -21,7 +21,7 @@ TEST_MODE=false
 ILLEGAL_CHAR_REPLACEMENT="_"
 SANITIZE_WITH_JQ=false
 
-help () {
+help() {
   printf "* Transfer MongoDB data to BigQuery *\n"
   printf "Operands:\n"
   printf "\tmongodb-to-bigquery.sh [OPTIONS] MONGODB_URI MONGODB_COLLECTION PROJECTID DATASET TABLE\n"
@@ -43,18 +43,23 @@ help () {
   printf "\t-c/--google-cloud-storage <bucket>\tStage data in given Google Cloud Storage bucket before loading into BigQuery\n"
   printf "\t-p/--time-partitioning <field>\t\tSet time partioning on given field\n"
   printf "\t--illegal-char-replacement <char>\tCharacter to replace illegal characters with. Replacement must be letter, number or underscore\n"
-  printf "\t-z/--sanitize\t\t\t\tUse \`jq\` to sanitize column names\n"
+  printf "\t* Sanitization (comply with BigQuery column name requirements):
+  \t    -z/--sanitize-with-regex\t\tUse regex to sanitize column names
+  \t    --sanitize-with-jq\t\t\ttUse \`jq\` to sanitize column names\n"
   printf "Example:\n"
   printf "\tmongodb-to-bigquery.sh \"mongodb://user:pass@localhost:27017/db\" mycollection myproject mydataset mytable\n"
 }
-die() { echo -e "$*" 1>&2 ; exit 1; }
+die() {
+  echo -e "$*" 1>&2
+  exit 1
+}
 
 ###################################### Option parsing ######################################
 while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org/BashFAQ/035
   case $1 in
   -h | --help)
     help
-    exit 0;
+    exit 0
     ;;
   --delete)
     DELETE_FILE=true
@@ -127,7 +132,7 @@ while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org
       die 'ERROR: "--query-file" requires a non-empty option argument.'
     fi
     ;;
-   -i | --incremental-id)
+  -i | --incremental-id)
     USE_START_ID=true
     if [ "$2" ]; then
       START_ID=$2
@@ -162,22 +167,25 @@ while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org
       die 'ERROR: "--illegal-char-replacement" requires a non-empty option argument.'
     fi
     ;;
-  -z | --sanitize)
+  -z | --sanitize-with-regex)
+    SANITIZE_WITH_REGEX=true
+    ;;
+  --sanitize-with-jq)
     SANITIZE_WITH_JQ=true
     ;;
   --test)
     TEST_MODE=true
     ;;
- *) break ;;
+  *) break ;;
   esac
   shift
 done
 ############################################################################################
 
 if [ "$#" -ne 5 ]; then
-    echo -e "${RED}Missing parameters.${NC}"
-    help
-    exit 1
+  echo -e "${RED}Missing parameters.${NC}"
+  help
+  exit 1
 fi
 
 MONGO_URI=$1
@@ -187,17 +195,6 @@ BQ_DATASET=$4
 BQ_TABLE=$5
 
 BQ_LOCATION="europe-west2"
-
-# `walk` backported from jq 1.6
-# https://github.com/stedolan/jq/issues/963#issuecomment-152783116
-JQ_WALK_FUNCTION='def walk(f):
-  . as $in
-  | if type == "object" then
-      reduce keys[] as $key
-        ( {}; . + { ($key):  ($in[$key] | walk(f)) } ) | f
-  elif type == "array" then map( walk(f) ) | f
-  else f
-  end;'
 
 if [ "${USE_LOCAL_FILE}" = true ]; then
   DATA_FILENAME="${LOCAL_FILE}"
@@ -209,8 +206,6 @@ if [ "${USE_LOCAL_SCHEMA_FILE}" = true ]; then
 else
   SCHEMA_FILENAME="${DATA_DIR}/$(echo "${MONGO_COLLECTION}" | md5sum | cut -f1 -d' ').schema.json"
 fi
-
-echo $DATA_FILENAME $SCHEMA_FILENAME
 
 if [ "${USE_LOCAL_FILE}" = false ]; then
   echo -e "${BROWN}[*] Retrieving data from MongoDB collection=${MONGO_COLLECTION} ${NC}"
@@ -234,30 +229,60 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
   if [ "${TEST_MODE}" = true ]; then
     MONGO_COMMAND+="--limit 10000 "
   fi
-  # BigQuery only accepts column names shorter than 128 characters with letters, numbers or underscores
-  #  https://cloud.google.com/bigquery/docs/schemas#column_names
-  # MongoDB doesn't accept signs and dots in field names, these are replaced by the code point strings '\u0024' and '\u002e' respectively
-  # Replace these MongoDB substitutions + unnecessary `$date` and `$oid`
-  MONGO_COMMAND+=" | sed 's/{\"\$date\":\"\([^}]*\)\"}/\"\1\"/g;s/{\"\$oid\":\"\([^}]*\)\"}/\"\1\"/g;s/\\\\u0024/${ILLEGAL_CHAR_REPLACEMENT}/g;s/\\\\u002e/${ILLEGAL_CHAR_REPLACEMENT}/g;'"
 
-  # Use perl to replace illegal characters in and truncate keys. (faster than `jq`)
-  # https://stackoverflow.com/questions/40397220/regex-substitute-character-in-a-matching-substring
-  # alt: https://stackoverflow.com/questions/44536133/replace-characters-inside-a-regex-match
-  MONGO_COMMAND+=' | perl -pe '\''s/(?:\G(?!\A)|\")(?=[^\"]*\":)[A-Za-z0-9_]*\K[^a-zA-Z0-9_\"]/'"${ILLEGAL_CHAR_REPLACEMENT}"'/g'\'''
-  MONGO_COMMAND+=' | perl -pe '\''s/\"([^\"]{0,128})[^\"]*\"\:/\"$1\"\:/g'\''' # truncate
+  # Replace unnecessary `$date` and `$oid`
+  MONGO_COMMAND+=" | sed 's/{\"\$date\":\"\([^}]*\)\"}/\"\1\"/g;s/{\"\$oid\":\"\([^}]*\)\"}/\"\1\"/g;'"
 
-  if [ "${SANITIZE_WITH_JQ}" = true]; then
+  if [ "${SANITIZE_WITH_REGEX}" = true ]; then
+    # Use if you aren't sure that column names are according to BigQuery requirements.
+    # BigQuery only accepts column names shorter than 128 characters with letters, numbers or underscores,
+    #  starting with a letter or underscore
+    #  https://cloud.google.com/bigquery/docs/schemas#column_names
+
+    # MongoDB doesn't accept signs and dots in field names, these are replaced by the code point strings '\u0024' and '\u002e' respectively
+    # Use sed to replace these MongoDB substitutions
+    MONGO_COMMAND+=" | sed 's/\\\\u0024/${ILLEGAL_CHAR_REPLACEMENT}/g;s/\\\\u002e/${ILLEGAL_CHAR_REPLACEMENT}/g;'"
+    # Use perl to replace illegal characters in and truncate keys. (faster than `jq`)
+    # https://stackoverflow.com/questions/40397220/regex-substitute-character-in-a-matching-substring
+    # alt: https://stackoverflow.com/questions/44536133/replace-characters-inside-a-regex-match
+    MONGO_COMMAND+=' | perl -pe '\''s/(?:\G(?!\A)|\")(?=[^\"]+\":)[A-Za-z0-9_]*\K[^a-zA-Z0-9_\"]/'"${ILLEGAL_CHAR_REPLACEMENT}"'/g'\'''
+    # shellcheck disable=SC2016
+    MONGO_COMMAND+=' | perl -pe '\''s/\"([^a-zA-Z_][^\"]*)\"\:/\"'"${ILLEGAL_CHAR_REPLACEMENT}"'$1\"\:/g'\''' # start with valid character
+    # shellcheck disable=SC2016
+    MONGO_COMMAND+=' | perl -pe '\''s/\"([^\"]{1,128})[^\"]*\"\:/\"$1\"\:/g'\'''                              # truncate
+    # Multiple perl processes -> form of parallelization
+    # TODO A column name cannot use any of the following prefixes: _TABLE_ _FILE_ _PARTITION
+    # TODO what to do about "Duplicate column names are not allowed even if the case differs"?
+  fi
+  if [ "${SANITIZE_WITH_JQ}" = true ]; then
     # Use `jq` to replace illegal characters in and truncate keys.
     # Optional, as it is very slow. (jq seems to compile the script, so no performance loss by including the walk function)
+
     # https://stedolan.github.io/jq/manual/#walk(f) https://stackoverflow.com/a/42355383/7391782
+    # `walk` backported from jq 1.6
+    # https://github.com/stedolan/jq/issues/963#issuecomment-152783116
+    # shellcheck disable=SC2016
+    JQ_WALK_FUNCTION='def walk(f):
+      . as $in
+      | if type == "object" then
+          reduce keys[] as $key
+            ( {}; . + { ($key):  ($in[$key] | walk(f)) } ) | f
+      elif type == "array" then map( walk(f) ) | f
+      else f
+      end;'
+
     MONGO_COMMAND+=" | jq -c '${JQ_WALK_FUNCTION} walk(if type == \"object\" then with_entries(.key |= gsub(\"[^a-zA-Z0-9_]\";\"${ILLEGAL_CHAR_REPLACEMENT}\")[0:128]) else . end )'"
   fi
+  # TODO postprocess with `jq`
+
   # gzip to reduce data size
   MONGO_COMMAND+=" | gzip"
   # TODO gzip to disk for space, but upload uncompressed for faster processing?
   # https://cloud.google.com/bigquery/docs/loading-data#loading_compressed_and_uncompressed_data
   # https://www.oreilly.com/library/view/google-bigquery-the/9781492044451/ch04.html
+
   MONGO_COMMAND+="> ${DATA_FILENAME}"
+
   eval "$MONGO_COMMAND" || die "${RED}[-] Failed to retrieve data from MongoDB! ${NC}"
   LAST_RECORD=$(mongoexport --uri="${MONGO_URI}" --collection="${MONGO_COLLECTION}" --type json "${QUERY_STRING}" --sort='{_id:-1}' --limit=1 2>/dev/null | jq -r '._id."$oid"')
   LAST_TIMESTAMP=$(date +%s)
@@ -298,7 +323,7 @@ fi
 # Make dataset if necessary
 # TODO Verify? Dataset IDs must be alphanumeric (plus underscores) and must be at most 1024 characters long.
 # TODO - or do before everything else
-if ! bq show "${BQ_PROJECTID}":"${BQ_DATASET}" > /dev/null; then
+if ! bq show "${BQ_PROJECTID}":"${BQ_DATASET}" >/dev/null; then
   echo -e "${BROWN}[*] Creating BigQuery dataset ${BQ_PROJECTID}:${BQ_DATASET} ${NC}"
   bq --location=${BQ_LOCATION} mk --dataset "${BQ_PROJECTID}":"${BQ_DATASET}" || die "${RED}[-] Failed to create dataset! ${NC}"
   echo -e "${GREEN}[+] Created dataset ${BQ_PROJECTID}:${BQ_DATASET} ! ${NC}"
