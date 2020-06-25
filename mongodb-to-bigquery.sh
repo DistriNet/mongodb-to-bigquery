@@ -1,5 +1,6 @@
 # requires: Python package `bigquery-schema-generator` in `venv`; `google-cloud-sdk` in $PATH
-
+{ # Ensure script is ingested/executed as a whole
+  # https://unix.stackexchange.com/questions/331837/how-to-read-the-whole-shell-script-before-executing-it
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 BROWN='\033[0;33m'
@@ -377,7 +378,7 @@ if [ $DELETE_FILE = true ]; then
 #    rm "${SCHEMA_FILENAME}"
 #  fi
 fi
-
+}; exit
 #  https://medium.com/google-cloud/export-load-job-with-mongodb-bigquery-part-i-64a00eb5266b
 #  https://hevodata.com/blog/mongodb-to-bigquery-etl-stream-data/
 #  https://stackoverflow.com/questions/42167543/mongodb-to-bigquery
