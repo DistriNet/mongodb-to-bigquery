@@ -7,28 +7,13 @@ BROWN='\033[0;33m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-DELETE_FILE=false
-USE_LOCAL_FILE=false
-LOCAL_FILE=
-DATA_DIR="."
-USE_GOOGLE_CLOUD_STORAGE=false
-GOOGLE_CLOUD_STORAGE_BUCKET=
-USE_BIGQUERY_SCHEMA_INFERENCE=false
-USE_LOCAL_SCHEMA_INFERENCE=false
-USE_LOCAL_SCHEMA_FILE=false
-LOCAL_SCHEMA_FILE=
-USE_TIME_PARTITIONING=false
-TEST_MODE=false
-ILLEGAL_CHAR_REPLACEMENT="_"
-SANITIZE_WITH_JQ=false
-
 help() {
   printf "* Transfer MongoDB data to BigQuery *\n"
   printf "Operands:\n"
   printf "\tmongodb-to-bigquery.sh [OPTIONS] MONGODB_URI MONGODB_COLLECTION PROJECTID DATASET TABLE\n"
   printf "Options:\n"
 
-  printf "\t-d/--data-file <file>\t\t\tUse a local JSON file instead of retrieving data from MongoDB\n"
+  printf "\t-d/--data-file <file>\t\t\tUse a local JSONL file instead of retrieving data from MongoDB\n"
   printf "\t-r/--data-dir <dir>\t\t\tDirectory to store (temporary) data file\n"
   printf "\t* Limit data retrieval from MongoDB:
   \t    -q/--query-file <file>\t\tUse query in provided file
@@ -54,6 +39,24 @@ die() {
   echo -e "$*" 1>&2
   exit 1
 }
+
+DELETE_FILE=false
+USE_LOCAL_FILE=false
+LOCAL_FILE=
+DATA_DIR="."
+USE_GOOGLE_CLOUD_STORAGE=false
+GOOGLE_CLOUD_STORAGE_BUCKET=
+USE_BIGQUERY_SCHEMA_INFERENCE=false
+USE_LOCAL_SCHEMA_INFERENCE=false
+USE_LOCAL_SCHEMA_FILE=false
+LOCAL_SCHEMA_FILE=
+USE_TIME_PARTITIONING=false
+TEST_MODE=false
+ILLEGAL_CHAR_REPLACEMENT="_"
+FILTER_WITH_JQ=false
+JQ_FILTER=
+SANITIZE_WITH_REGEX=false
+SANITIZE_WITH_JQ=false
 
 ###################################### Option parsing ######################################
 while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org/BashFAQ/035
@@ -168,6 +171,15 @@ while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org
       die 'ERROR: "--illegal-char-replacement" requires a non-empty option argument.'
     fi
     ;;
+  -j | --filter-with-jq)
+    FILTER_WITH_JQ=true
+    if [ "$2" ]; then
+      JQ_FILTER=$2
+      shift
+    else
+      die 'ERROR: "--filter-with-jq" requires a non-empty option argument.'
+    fi
+    ;;
   -z | --sanitize-with-regex)
     SANITIZE_WITH_REGEX=true
     ;;
@@ -231,6 +243,10 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
     MONGO_COMMAND+="--limit 10000 "
   fi
 
+  if [ "${FILTER_WITH_JQ}" = true ]; then
+    MONGO_COMMAND+=" | jq -c ${JQ_FILTER}"
+  fi
+
   # Replace unnecessary `$date` and `$oid`
   MONGO_COMMAND+=" | sed 's/{\"\$date\":\"\([^}]*\)\"}/\"\1\"/g;s/{\"\$oid\":\"\([^}]*\)\"}/\"\1\"/g;'"
 
@@ -254,6 +270,7 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
     # Multiple perl processes -> form of parallelization
     # TODO A column name cannot use any of the following prefixes: _TABLE_ _FILE_ _PARTITION
     # TODO what to do about "Duplicate column names are not allowed even if the case differs"?
+    # TODO address escaped double quotes in keys
   fi
   if [ "${SANITIZE_WITH_JQ}" = true ]; then
     # Use `jq` to replace illegal characters in and truncate keys.
