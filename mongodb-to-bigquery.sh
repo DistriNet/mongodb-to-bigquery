@@ -262,7 +262,7 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
     # Use perl to replace illegal characters in and truncate keys. (faster than `jq`)
     # https://stackoverflow.com/questions/40397220/regex-substitute-character-in-a-matching-substring
     # alt: https://stackoverflow.com/questions/44536133/replace-characters-inside-a-regex-match
-    MONGO_COMMAND+=' | perl -pe '\''s/(?:\G(?!\A)|\")(?=[^\"]+\":)[A-Za-z0-9_]*\K[^a-zA-Z0-9_\"]/'"${ILLEGAL_CHAR_REPLACEMENT}"'/g'\'''
+    MONGO_COMMAND+=' | perl -pe '\''s/(?:\G(?!\A)|[,{]\")(?=[^\"]+\":)[A-Za-z0-9_]*\K[^a-zA-Z0-9_\"]/'"${ILLEGAL_CHAR_REPLACEMENT}"'/g'\'''
     # shellcheck disable=SC2016
     MONGO_COMMAND+=' | perl -pe '\''s/\"([^a-zA-Z_][^\"]*)\"\:/\"'"${ILLEGAL_CHAR_REPLACEMENT}"'$1\"\:/g'\''' # start with valid character
     # shellcheck disable=SC2016
