@@ -264,9 +264,9 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
     # alt: https://stackoverflow.com/questions/44536133/replace-characters-inside-a-regex-match
     MONGO_COMMAND+=' | perl -pe '\''s/(?:\G(?!\A)|[,{]\")(?=[^\"]+\":)[A-Za-z0-9_]*\K[^a-zA-Z0-9_\"]/'"${ILLEGAL_CHAR_REPLACEMENT}"'/g'\'''
     # shellcheck disable=SC2016
-    MONGO_COMMAND+=' | perl -pe '\''s/\"([^a-zA-Z_][^\"]*)\"\:/\"'"${ILLEGAL_CHAR_REPLACEMENT}"'$1\"\:/g'\''' # start with valid character
+    MONGO_COMMAND+=' | perl -pe '\''s/(?<=[,{]\")([^a-zA-Z_][^\"]*)(?=\"\:)/'"${ILLEGAL_CHAR_REPLACEMENT}"'$1/g'\''' # start with valid character
     # shellcheck disable=SC2016
-    MONGO_COMMAND+=' | perl -pe '\''s/\"([^\"]{1,128}+)[^\"]*\"\:/\"$1\"\:/g'\''' # truncate
+    MONGO_COMMAND+=' | perl -pe '\''s/(?<=[,{]\")([^\"]{1,128}+)(?=[^\"]*\"\:)/$1/g'\''' # truncate
     # Multiple perl processes -> form of parallelization
     # TODO A column name cannot use any of the following prefixes: _TABLE_ _FILE_ _PARTITION
     # TODO what to do about "Duplicate column names are not allowed even if the case differs"?
