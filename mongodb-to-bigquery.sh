@@ -208,12 +208,16 @@ BQ_DATASET=$4
 BQ_TABLE=$5
 
 BQ_LOCATION="europe-west2"
+SUFFIX=".json.gz"
+
+# TODO improve file handling with suffix
 
 if [ "${USE_LOCAL_FILE}" = true ]; then
   DATA_FILENAME="${LOCAL_FILE}"
 else
-  DATA_FILENAME="${DATA_DIR}/$(echo "${MONGO_COLLECTION}" | md5sum | cut -f1 -d' ').json.gz"
+  DATA_FILENAME="${DATA_DIR}/$(echo "${MONGO_COLLECTION}" | md5sum | cut -f1 -d' ')${SUFFIX}"
 fi
+DATA_FILE_GLOB="$(echo "${DATA_FILENAME}" | cut -f 1 -d '.')*${SUFFIX}"
 if [ "${USE_LOCAL_SCHEMA_FILE}" = true ]; then
   SCHEMA_FILENAME="${LOCAL_SCHEMA_FILE}"
 else
@@ -291,22 +295,26 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
 
     MONGO_COMMAND+=" | jq -c '${JQ_WALK_FUNCTION} walk(if type == \"object\" then with_entries(.key |= gsub(\"[^a-zA-Z0-9_]\";\"${ILLEGAL_CHAR_REPLACEMENT}\")[0:128]) else . end )'"
   fi
-  # TODO postprocess with `jq`
 
-  # gzip to reduce data size
-  MONGO_COMMAND+=" | gzip"
-  # TODO gzip to disk for space, but upload uncompressed for faster processing?
-  # https://cloud.google.com/bigquery/docs/loading-data#loading_compressed_and_uncompressed_data
-  # https://www.oreilly.com/library/view/google-bigquery-the/9781492044451/ch04.html
-
-  MONGO_COMMAND+="> ${DATA_FILENAME}"
+  # TODO make split optional?
+  if [ true ]; then
+    # gzip (in parallel = pigz) to reduce data size
+    # gzip files must be smaller than 4G - split while preserving newlines
+    # https://stackoverflow.com/questions/47062749/most-efficient-way-to-split-a-compressed-csv-into-chunks
+    MONGO_COMMAND+=" | split -C 4G -d - $(basename "${DATA_FILENAME}" ${SUFFIX}) --filter 'pigz > "'$FILE'"${SUFFIX}'"
+    # TODO gzip to disk for space, but upload uncompressed for faster processing?
+    # https://cloud.google.com/bigquery/docs/loading-data#loading_compressed_and_uncompressed_data
+    # https://www.oreilly.com/library/view/google-bigquery-the/9781492044451/ch04.html
+  else
+    MONGO_COMMAND+="> ${DATA_FILENAME}"
+  fi
 
   eval "$MONGO_COMMAND" || die "${RED}[-] Failed to retrieve data from MongoDB! ${NC}"
   LAST_RECORD=$(mongoexport --uri="${MONGO_URI}" --collection="${MONGO_COLLECTION}" --type json "${QUERY_STRING}" --sort='{_id:-1}' --limit=1 2>/dev/null | jq -r '._id."$oid"')
   LAST_TIMESTAMP=$(date +%s)
   echo -e "${CYAN}[>] Last record: ${LAST_RECORD} ; timestamp: ${LAST_TIMESTAMP} ${NC}"
 else
-  if [ ! -f "${DATA_FILENAME}" ]; then
+  if ls "${DATA_FILE_GLOB}" 1> /dev/null 2>&1; then
     die "${RED}[-] Data file does not exist ${NC}"
   fi
   echo -e "${BROWN}[*] Reading data from local file ${DATA_FILENAME} ${NC}"
@@ -322,18 +330,19 @@ echo -e "${GREEN}[+] Data retrieved successfully! ${NC}"
 if [ $USE_LOCAL_SCHEMA_INFERENCE = true ]; then
   # infer BigQuery schema across whole file (not 100 record sample) using https://pypi.org/project/bigquery-schema-generator/
   echo -e "${BROWN}[*] Generating BigQuery schema ${NC}"
-  zcat "${DATA_FILENAME}" | venv/bin/generate-schema >"${SCHEMA_FILENAME}" || die "${RED}[-] Failed to generate schema! ${NC}"
-  # TODO `head` to make local inference faster?
+  # no quotes for ls: we WANT globbing
+  # shellcheck disable=SC2086
+  ls -1 ${DATA_FILE_GLOB} | xargs pigz -dc | venv/bin/generate-schema >"${SCHEMA_FILENAME}" || die "${RED}[-] Failed to generate schema! ${NC}"
 fi
-if [ ! -f "${SCHEMA_FILENAME}" ] && [ "${USE_BIGQUERY_SCHEMA_INFERENCE}" = false ]; then
+if [ ! -s "${SCHEMA_FILENAME}" ] && [ "${USE_BIGQUERY_SCHEMA_INFERENCE}" = false ]; then
   die "${RED}[-] Schema file does not exist ${NC}"
 fi
 echo -e "${GREEN}[+] BigQuery schema available! ${NC}"
 
 if [ $USE_GOOGLE_CLOUD_STORAGE = true ]; then
   echo -e "${BROWN}[*] Uploading data to Google Cloud Storage ${NC}"
-  GOOGLE_CLOUD_STORAGE_LOCATION="gs://${GOOGLE_CLOUD_STORAGE_BUCKET}/${BQ_DATASET}/${BQ_TABLE}/$(basename "${DATA_FILENAME}")"
-  gsutil -o GSUtil:parallel_composite_upload_threshold=150M cp "${DATA_FILENAME}" "${GOOGLE_CLOUD_STORAGE_LOCATION}" || die "${RED}[-] Failed to upload data! ${NC}"
+  GOOGLE_CLOUD_STORAGE_LOCATION="gs://${GOOGLE_CLOUD_STORAGE_BUCKET}/${BQ_DATASET}/${BQ_TABLE}"
+  gsutil -o GSUtil:parallel_composite_upload_threshold=150M -m cp ${DATA_FILE_GLOB} "${GOOGLE_CLOUD_STORAGE_LOCATION}" || die "${RED}[-] Failed to upload data! ${NC}"
   echo -e "${GREEN}[+] Data uploaded to Google Cloud Storage! ${NC}"
 fi
 # Maximum file size for compressed JSON is 4 GB (https://cloud.google.com/bigquery/quotas#load_jobs)
@@ -348,11 +357,15 @@ if ! bq show "${BQ_PROJECTID}":"${BQ_DATASET}" >/dev/null; then
 fi
 
 if [ $USE_TIME_PARTITIONING = true ]; then
-  echo -e "${BROWN}[*] Creating time partitioned table ${NC}"
-  BQ_TABLE_CREATION_COMMAND="bq mk -t --schema ${SCHEMA_FILENAME} --time_partitioning_field ${TIME_PARTITIONING_FIELD} "
-  BQ_TABLE_CREATION_COMMAND+="--time_partitioning_type DAY --project_id=${BQ_PROJECTID} ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} "
-  eval "${BQ_TABLE_CREATION_COMMAND}" || die "${RED}[-] Failed to create table! ${NC}"
-  echo -e "${GREEN}[+] Table created! ${NC}"
+    if ! bq show "${BQ_PROJECTID}":"${BQ_DATASET}.${BQ_TABLE}" >/dev/null; then
+      echo -e "${BROWN}[*] Creating time partitioned table ${NC}"
+      BQ_TABLE_CREATION_COMMAND="bq mk -t --schema ${SCHEMA_FILENAME} --time_partitioning_field ${TIME_PARTITIONING_FIELD} "
+      BQ_TABLE_CREATION_COMMAND+="--time_partitioning_type DAY --project_id=${BQ_PROJECTID} ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} "
+      eval "${BQ_TABLE_CREATION_COMMAND}" || die "${RED}[-] Failed to create table! ${NC}"
+      echo -e "${GREEN}[+] Table created! ${NC}"
+    else
+      echo -e "${BROWN}[!] Time partitioned table ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} already exists. ${NC}"
+    fi
 fi
 
 echo -e "${BROWN}[*] Loading data into BigQuery table ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} ${NC}"
@@ -364,8 +377,9 @@ else
   BQ_COMMAND+="--schema ${SCHEMA_FILENAME} "
 fi
 BQ_COMMAND+="--project_id=${BQ_PROJECTID} ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} "
+# TODO add `max_bad_records`?
 if [ $USE_GOOGLE_CLOUD_STORAGE = true ]; then
-  BQ_COMMAND+="${GOOGLE_CLOUD_STORAGE_LOCATION}"
+  BQ_COMMAND+="${GOOGLE_CLOUD_STORAGE_LOCATION}/$(basename "${DATA_FILE_GLOB}" ${SUFFIX})"
 else
   BQ_COMMAND+="${DATA_FILENAME}"
 fi
