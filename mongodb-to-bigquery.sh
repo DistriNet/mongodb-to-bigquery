@@ -32,8 +32,9 @@ help() {
   printf "\t* Sanitization (comply with BigQuery column name requirements):
   \t    -z/--sanitize-with-regex\t\tUse regex to sanitize column names
   \t    --sanitize-with-jq\t\t\ttUse \`jq\` to sanitize column names\n"
-  printf "Example:\n"
-  printf "\tmongodb-to-bigquery.sh \"mongodb://user:pass@localhost:27017/db\" mycollection myproject mydataset mytable\n"
+  printf "Examples:\n"
+  printf "\t${0##*/} \"mongodb://user:pass@localhost:27017/db\" mycollection myproject mydataset mytable\n"
+  printf "\t${0##*/} --data-file my_data.json -b myproject mydataset mytable\n"
 }
 die() {
   echo -e "$*" 1>&2
@@ -195,17 +196,29 @@ while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org
 done
 ############################################################################################
 
-if [ "$#" -ne 5 ]; then
-  echo -e "${RED}Missing parameters.${NC}"
-  help
-  exit 1
-fi
+if [ "${USE_LOCAL_FILE}" = true ]; then
+  if [ "$#" -ne 3 ]; then
+    echo -e "${RED}Missing parameters.${NC}"
+    help
+    exit 1
+  fi
 
-MONGO_URI=$1
-MONGO_COLLECTION=$2
-BQ_PROJECTID=$3
-BQ_DATASET=$4
-BQ_TABLE=$5
+  BQ_PROJECTID=$1
+  BQ_DATASET=$2
+  BQ_TABLE=$3
+else
+  if [ "$#" -ne 5 ]; then
+    echo -e "${RED}Missing parameters.${NC}"
+    help
+    exit 1
+  fi
+
+  MONGO_URI=$1
+  MONGO_COLLECTION=$2
+  BQ_PROJECTID=$3
+  BQ_DATASET=$4
+  BQ_TABLE=$5
+fi
 
 BQ_LOCATION="europe-west2"
 SUFFIX=".json.gz"
@@ -221,7 +234,11 @@ DATA_FILE_GLOB="$(echo "${DATA_FILENAME}" | cut -f 1 -d '.')*${SUFFIX}"
 if [ "${USE_LOCAL_SCHEMA_FILE}" = true ]; then
   SCHEMA_FILENAME="${LOCAL_SCHEMA_FILE}"
 else
-  SCHEMA_FILENAME="${DATA_DIR}/$(echo "${MONGO_COLLECTION}" | md5sum | cut -f1 -d' ').schema.json"
+  if [ "${USE_LOCAL_FILE}" = true ]; then
+    SCHEMA_FILENAME="${DATA_DIR}/$(echo "${LOCAL_FILE}" | md5sum | cut -f1 -d' ').schema.json"
+  else
+    SCHEMA_FILENAME="${DATA_DIR}/$(echo "${MONGO_COLLECTION}" | md5sum | cut -f1 -d' ').schema.json"
+  fi
 fi
 
 if [ "${USE_LOCAL_FILE}" = false ]; then
