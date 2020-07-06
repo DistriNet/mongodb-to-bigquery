@@ -31,7 +31,8 @@ help() {
   printf "\t--illegal-char-replacement <char>\tCharacter to replace illegal characters with. Replacement must be letter, number or underscore\n"
   printf "\t* Sanitization (comply with BigQuery column name requirements):
   \t    -z/--sanitize-with-regex\t\tUse regex to sanitize column names
-  \t    --sanitize-with-jq\t\t\ttUse \`jq\` to sanitize column names\n"
+  \t    --sanitize-with-jq\t\t\tUse \`jq\` to sanitize column names\n"
+  printf "\t-a/--allow-bad-records\t\t\tSkip bad records when loading data into BigQuery\n"
   printf "Examples:\n"
   printf "\t${0##*/} \"mongodb://user:pass@localhost:27017/db\" mycollection myproject mydataset mytable\n"
   printf "\t${0##*/} --data-file my_data.json -b myproject mydataset mytable\n"
@@ -58,6 +59,7 @@ FILTER_WITH_JQ=false
 JQ_FILTER=
 SANITIZE_WITH_REGEX=false
 SANITIZE_WITH_JQ=false
+BIGQUERY_ALLOW_BAD_RECORDS=false
 
 ###################################### Option parsing ######################################
 while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org/BashFAQ/035
@@ -187,6 +189,9 @@ while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org
   --sanitize-with-jq)
     SANITIZE_WITH_JQ=true
     ;;
+  -a | --allow-bad-records)
+    BIGQUERY_ALLOW_BAD_RECORDS=true
+    ;;
   --test)
     TEST_MODE=true
     ;;
@@ -248,9 +253,9 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
   if [ "${USE_QUERY_FILE}" = true ]; then
     QUERY_STRING="--query='$(cat "${QUERY_FILE}")' "
   elif [ "${USE_START_ID}" = true ]; then
-    QUERY_STRING="--query='{ \"_id\": { \"\$gte\": ObjectId(\"${START_ID}\") } }' "
+    QUERY_STRING="--query='{ \"_id\": { \"\$gte\": {\"\$oid\": \"${START_ID}\" } } }' "
   elif [ "${USE_START_TIME}" = true ]; then
-    QUERY_STRING="--query='{ \"_id\": { \"\$gte\": ObjectId(\"$(printf '%x\n' "${START_TIME}")0000000000000000\") } }' "
+    QUERY_STRING="--query='{ \"_id\": { \"\$gte\": {\"\$oid\": \"$(printf '%x\n' "${START_TIME}")0000000000000000\" } } }' "
     # https://stackoverflow.com/a/8753670/7391782
   fi
   MONGO_COMMAND+=${QUERY_STRING}
@@ -318,7 +323,7 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
     # gzip (in parallel = pigz) to reduce data size
     # gzip files must be smaller than 4G - split while preserving newlines
     # https://stackoverflow.com/questions/47062749/most-efficient-way-to-split-a-compressed-csv-into-chunks
-    MONGO_COMMAND+=" | split -C 4G -d - $(basename "${DATA_FILENAME}" ${SUFFIX}) --filter 'pigz > "'$FILE'"${SUFFIX}'"
+    MONGO_COMMAND+=" | split -C 4G -d - $(echo "${DATA_FILENAME}" | cut -f 1 -d '.') --filter 'pigz > "'$FILE'"${SUFFIX}'"
     # TODO gzip to disk for space, but upload uncompressed for faster processing?
     # https://cloud.google.com/bigquery/docs/loading-data#loading_compressed_and_uncompressed_data
     # https://www.oreilly.com/library/view/google-bigquery-the/9781492044451/ch04.html
@@ -350,6 +355,7 @@ if [ $USE_LOCAL_SCHEMA_INFERENCE = true ]; then
   # no quotes for ls: we WANT globbing
   # shellcheck disable=SC2086
   ls -1 ${DATA_FILE_GLOB} | xargs pigz -dc | venv/bin/generate-schema >"${SCHEMA_FILENAME}" || die "${RED}[-] Failed to generate schema! ${NC}"
+  # TODO add --ignore_invalid_lines once update to generator is released
 fi
 if [ ! -s "${SCHEMA_FILENAME}" ] && [ "${USE_BIGQUERY_SCHEMA_INFERENCE}" = false ]; then
   die "${RED}[-] Schema file does not exist ${NC}"
@@ -388,13 +394,15 @@ fi
 echo -e "${BROWN}[*] Loading data into BigQuery table ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} ${NC}"
 
 BQ_COMMAND="bq --location=${BQ_LOCATION} load --source_format NEWLINE_DELIMITED_JSON --ignore_unknown_values "
+if [ "$BIGQUERY_ALLOW_BAD_RECORDS" = true ]; then
+  BQ_COMMAND+="--max_bad_records=999999999 "
+fi
 if [ $USE_BIGQUERY_SCHEMA_INFERENCE = true ]; then
   BQ_COMMAND+="--autodetect "
 else
   BQ_COMMAND+="--schema ${SCHEMA_FILENAME} "
 fi
 BQ_COMMAND+="--project_id=${BQ_PROJECTID} ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} "
-# TODO add `max_bad_records`?
 if [ $USE_GOOGLE_CLOUD_STORAGE = true ]; then
   BQ_COMMAND+="${GOOGLE_CLOUD_STORAGE_LOCATION}/$(basename "${DATA_FILE_GLOB}" ${SUFFIX})"
 else
