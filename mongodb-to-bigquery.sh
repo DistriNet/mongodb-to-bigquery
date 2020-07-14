@@ -33,6 +33,7 @@ help() {
   \t    -z/--sanitize-with-regex\t\tUse regex to sanitize column names
   \t    --sanitize-with-jq\t\t\tUse \`jq\` to sanitize column names\n"
   printf "\t-a/--allow-bad-records\t\t\tSkip bad records when loading data into BigQuery\n"
+  printf "\t-e/--remove-table-if-exists\t\t\tRemove the table if it already exists\n"
   printf "Examples:\n"
   printf "\t${0##*/} \"mongodb://user:pass@localhost:27017/db\" mycollection myproject mydataset mytable\n"
   printf "\t${0##*/} --data-file my_data.json -b myproject mydataset mytable\n"
@@ -60,6 +61,7 @@ JQ_FILTER=
 SANITIZE_WITH_REGEX=false
 SANITIZE_WITH_JQ=false
 BIGQUERY_ALLOW_BAD_RECORDS=false
+REMOVE_TABLE_IF_EXISTS=false
 
 ###################################### Option parsing ######################################
 while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org/BashFAQ/035
@@ -191,6 +193,9 @@ while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org
     ;;
   -a | --allow-bad-records)
     BIGQUERY_ALLOW_BAD_RECORDS=true
+    ;;
+  -e | --remove-table-if-exists)
+    REMOVE_TABLE_IF_EXISTS=true
     ;;
   --test)
     TEST_MODE=true
@@ -377,6 +382,14 @@ if ! bq show "${BQ_PROJECTID}":"${BQ_DATASET}" >/dev/null; then
   echo -e "${BROWN}[*] Creating BigQuery dataset ${BQ_PROJECTID}:${BQ_DATASET} ${NC}"
   bq --location=${BQ_LOCATION} mk --dataset "${BQ_PROJECTID}":"${BQ_DATASET}" || die "${RED}[-] Failed to create dataset! ${NC}"
   echo -e "${GREEN}[+] Created dataset ${BQ_PROJECTID}:${BQ_DATASET} ! ${NC}"
+fi
+
+if [ $REMOVE_TABLE_IF_EXISTS = true ]; then
+  if bq show "${BQ_PROJECTID}":"${BQ_DATASET}.${BQ_TABLE}" >/dev/null; then
+    echo -e "${BROWN}[*] Removing BigQuery table ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} ${NC}"
+    bq rm -f "${BQ_PROJECTID}":"${BQ_DATASET}.${BQ_TABLE}"
+    echo -e "${GREEN}[+] Removed table ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} ${NC}"
+  fi
 fi
 
 if [ $USE_TIME_PARTITIONING = true ]; then
