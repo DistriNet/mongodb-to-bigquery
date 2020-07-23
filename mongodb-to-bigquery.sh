@@ -236,7 +236,7 @@ SUFFIX=".json.gz"
 # TODO improve file handling with suffix
 
 if [ "${USE_LOCAL_FILE}" = true ]; then
-  DATA_FILENAME="${LOCAL_FILE}"
+  DATA_FILENAME="${DATA_DIR}/${LOCAL_FILE}"
 else
   DATA_FILENAME="${DATA_DIR}/$(echo "${MONGO_COLLECTION}" | md5sum | cut -f1 -d' ')${SUFFIX}"
 fi
@@ -370,7 +370,7 @@ echo -e "${GREEN}[+] BigQuery schema available! ${NC}"
 if [ $USE_GOOGLE_CLOUD_STORAGE = true ]; then
   echo -e "${BROWN}[*] Uploading data to Google Cloud Storage ${NC}"
   GOOGLE_CLOUD_STORAGE_LOCATION="gs://${GOOGLE_CLOUD_STORAGE_BUCKET}/${BQ_DATASET}/${BQ_TABLE}"
-  gsutil -o GSUtil:parallel_composite_upload_threshold=150M -m cp ${DATA_FILE_GLOB} "${GOOGLE_CLOUD_STORAGE_LOCATION}" || die "${RED}[-] Failed to upload data! ${NC}"
+  gsutil -o GSUtil:parallel_composite_upload_threshold=150M -m cp ${DATA_FILE_GLOB} "${GOOGLE_CLOUD_STORAGE_LOCATION}/" || die "${RED}[-] Failed to upload data! ${NC}"
   echo -e "${GREEN}[+] Data uploaded to Google Cloud Storage! ${NC}"
 fi
 # Maximum file size for compressed JSON is 4 GB (https://cloud.google.com/bigquery/quotas#load_jobs)
@@ -429,7 +429,7 @@ fi
 
 if [ $USE_GOOGLE_CLOUD_STORAGE = true ]; then
   echo -e "${BROWN}[*] Deleting data from Google Cloud Storage ${NC}"
-  if gsutil rm "${GOOGLE_CLOUD_STORAGE_LOCATION}"; then
+  if gsutil rm "${GOOGLE_CLOUD_STORAGE_LOCATION}/$(basename "${DATA_FILE_GLOB}" ${SUFFIX})"; then
     echo -e "${GREEN}[+] Data deleted from Google Cloud Storage! ${NC}"
   else
     echo -e "${RED}[-] Failed to delete data from Google Cloud Storage! ${NC}"
