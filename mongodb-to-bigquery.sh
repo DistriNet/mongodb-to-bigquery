@@ -237,10 +237,13 @@ SUFFIX=".json.gz"
 
 if [ "${USE_LOCAL_FILE}" = true ]; then
   DATA_FILENAME="${DATA_DIR}/${LOCAL_FILE}"
+  DATA_FILE_GLOB="${DATA_FILENAME}"
+  BASENAME=$(basename "${DATA_FILE_GLOB}")
 else
   DATA_FILENAME="${DATA_DIR}/$(echo "${MONGO_COLLECTION}" | md5sum | cut -f1 -d' ')${SUFFIX}"
+  DATA_FILE_GLOB="$(echo "${DATA_FILENAME}" | cut -f 1 -d '.')*${SUFFIX}"
+  BASENAME=$(basename "${DATA_FILE_GLOB}" ${SUFFIX})
 fi
-DATA_FILE_GLOB="$(echo "${DATA_FILENAME}" | cut -f 1 -d '.')*${SUFFIX}"
 if [ "${USE_LOCAL_SCHEMA_FILE}" = true ]; then
   SCHEMA_FILENAME="${LOCAL_SCHEMA_FILE}"
 else
@@ -341,7 +344,7 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
   LAST_TIMESTAMP=$(date +%s)
   echo -e "${CYAN}[>] Last record: ${LAST_RECORD} ; timestamp: ${LAST_TIMESTAMP} ${NC}"
 else
-  if ls "${DATA_FILE_GLOB}" 1> /dev/null 2>&1; then
+  if ! ls "${DATA_FILE_GLOB}" 1> /dev/null 2>&1; then
     die "${RED}[-] Data file does not exist ${NC}"
   fi
   echo -e "${BROWN}[*] Reading data from local file ${DATA_FILENAME} ${NC}"
@@ -370,6 +373,7 @@ echo -e "${GREEN}[+] BigQuery schema available! ${NC}"
 if [ $USE_GOOGLE_CLOUD_STORAGE = true ]; then
   echo -e "${BROWN}[*] Uploading data to Google Cloud Storage ${NC}"
   GOOGLE_CLOUD_STORAGE_LOCATION="gs://${GOOGLE_CLOUD_STORAGE_BUCKET}/${BQ_DATASET}/${BQ_TABLE}"
+
   gsutil -o GSUtil:parallel_composite_upload_threshold=150M -m cp ${DATA_FILE_GLOB} "${GOOGLE_CLOUD_STORAGE_LOCATION}/" || die "${RED}[-] Failed to upload data! ${NC}"
   echo -e "${GREEN}[+] Data uploaded to Google Cloud Storage! ${NC}"
 fi
@@ -417,7 +421,7 @@ else
 fi
 BQ_COMMAND+="--project_id=${BQ_PROJECTID} ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} "
 if [ $USE_GOOGLE_CLOUD_STORAGE = true ]; then
-  BQ_COMMAND+="${GOOGLE_CLOUD_STORAGE_LOCATION}/$(basename "${DATA_FILE_GLOB}" ${SUFFIX})"
+  BQ_COMMAND+="${GOOGLE_CLOUD_STORAGE_LOCATION}/${BASENAME}"
 else
   BQ_COMMAND+="${DATA_FILENAME}"
 fi
@@ -429,7 +433,7 @@ fi
 
 if [ $USE_GOOGLE_CLOUD_STORAGE = true ]; then
   echo -e "${BROWN}[*] Deleting data from Google Cloud Storage ${NC}"
-  if gsutil rm "${GOOGLE_CLOUD_STORAGE_LOCATION}/$(basename "${DATA_FILE_GLOB}" ${SUFFIX})"; then
+  if gsutil rm "${GOOGLE_CLOUD_STORAGE_LOCATION}/${BASENAME}"; then
     echo -e "${GREEN}[+] Data deleted from Google Cloud Storage! ${NC}"
   else
     echo -e "${RED}[-] Failed to delete data from Google Cloud Storage! ${NC}"
