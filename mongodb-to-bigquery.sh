@@ -17,8 +17,11 @@ help() {
   printf "\t-r/--data-dir <dir>\t\t\tDirectory to store (temporary) data file\n"
   printf "\t* Limit data retrieval from MongoDB:
   \t    -q/--query-file <file>\t\tUse query in provided file
-  \t    -i/--incremental-id <id>\t\tOnly retrieve records after the given ObjectID
-  \t    -t/--incremental-time <timestamp>\tOnly retrieve records created after the given timestamp since epoch\n"
+  \t    --start-id <id>\t\tOnly retrieve records after the given ObjectID
+  \t    --start-time <timestamp>\tOnly retrieve records created after the given timestamp since epoch
+  \t    --end-id <id>\t\tOnly retrieve records before the given ObjectID
+  \t    --end-time <timestamp>\tOnly retrieve records created before the given timestamp since epoch
+  \t    (Supported combination: (query-file) and/or (start-id or start-time) and/or (end-id or end-id))\n"
   printf "\t* Limit field retrieval from MongoDB:
   \t    -f/--fields <fields>\t\tFields to include in the export
   printf "\t* Schema definition:
@@ -131,22 +134,40 @@ while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org
       die 'ERROR: "--query-file" requires a non-empty option argument.'
     fi
     ;;
-  -i | --incremental-id)
+  --start-id)
     USE_START_ID=true
     if [ "$2" ]; then
       START_ID=$2
       shift
     else
-      die 'ERROR: "--incremental-id" requires a non-empty option argument.'
+      die 'ERROR: "--start-id" requires a non-empty option argument.'
     fi
     ;;
-  -t | --incremental-time)
+  --start-time)
     USE_START_TIME=true
     if [ "$2" ]; then
       START_TIME=$2
       shift
     else
-      die 'ERROR: "--incremental-time" requires a non-empty option argument.'
+      die 'ERROR: "--start-time" requires a non-empty option argument.'
+    fi
+    ;;
+  --end-id)
+    USE_END_ID=true
+    if [ "$2" ]; then
+      END_ID=$2
+      shift
+    else
+      die 'ERROR: "--end-id" requires a non-empty option argument.'
+    fi
+    ;;
+  --end-time)
+    USE_END_TIME=true
+    if [ "$2" ]; then
+      END_TIME=$2
+      shift
+    else
+      die 'ERROR: "--end-time" requires a non-empty option argument.'
     fi
     ;;
   -p | --time-partitioning)
@@ -247,16 +268,52 @@ fi
 if [ "${USE_LOCAL_FILE}" = false ]; then
   echo -e "${BROWN}[*] Retrieving data from MongoDB collection=${MONGO_COLLECTION} ${NC}"
   MONGO_COMMAND="mongoexport --uri=${MONGO_URI} --collection=${MONGO_COLLECTION} --type=json "
-  QUERY_STRING=""
-  if [ "${USE_QUERY_FILE}" = true ]; then
-    QUERY_STRING="--query='$(cat "${QUERY_FILE}")' "
-  elif [ "${USE_START_ID}" = true ]; then
-    QUERY_STRING="--query='{ \"_id\": { \"\$gte\": {\"\$oid\": \"${START_ID}\" } } }' "
-  elif [ "${USE_START_TIME}" = true ]; then
-    QUERY_STRING="--query='{ \"_id\": { \"\$gte\": {\"\$oid\": \"$(printf '%x\n' "${START_TIME}")0000000000000000\" } } }' "
-    # https://stackoverflow.com/a/8753670/7391782
+
+  if [ "${USE_QUERY_FILE}" = true ] || [ "${USE_START_ID}" = true ] || [ "${USE_START_TIME}" = true ] || [ "${USE_END_ID}" = true ] || [ "${USE_END_TIME}" = true ]; then
+    # Build MongoDB filter query
+    if [ "${USE_START_TIME}" = true ]; then
+      # https://stackoverflow.com/a/8753670/7391782
+      START_ID=$(printf '%x\n' "${START_TIME}")0000000000000000
+    fi
+    if [ "${USE_START_ID}" = true ] || [ "${USE_START_TIME}" = true ]; then
+      QUERY_STRING="--query='{ \"_id\": { \"\$gte\": {\"\$oid\": \"${START_ID}\" } } }' "
+    fi
+    if [ "${USE_END_TIME}" = true ]; then
+      # https://stackoverflow.com/a/8753670/7391782
+      END_ID=$(printf '%x\n' "${END_TIME}")0000000000000000
+    fi
+    if [ "${USE_END_ID}" = true ] || [ "${USE_END_TIME}" = true ]; then
+      QUERY_STRING="--query='{ \"_id\": { \"\$gte\": {\"\$oid\": \"${END_ID}\" } } }' "
+    fi
+
+    JQ_COMMAND_ARG=""
+    JQ_COMMAND_FILTER=""
+    if [ "${USE_START_ID}" = true ] || [ "${USE_START_TIME}" = true ] || [ "${USE_END_ID}" = true ] || [ "${USE_END_TIME}" = true ]; then
+      # should be fine to have both $gte and $lte directly (i.e. not combined with $and)
+      JQ_COMMAND_FILTER+="\"_id\": {"
+      if [ "${USE_START_ID}" = true ] || [ "${USE_START_TIME}" = true ]; then
+        JQ_COMMAND_ARG+=" --arg startid ${START_ID}"
+        # shellcheck disable=SC2016
+        JQ_COMMAND_FILTER+='"$gte": {"$oid": $startid } , '  # single quotes to preserve $ for jq
+      fi
+      if [ "${USE_END_ID}" = true ] || [ "${USE_END_TIME}" = true ]; then
+        JQ_COMMAND_ARG+=" --arg endid ${END_ID}"  # naming it 'end' gives errors https://github.com/stedolan/jq/issues/1619
+        # shellcheck disable=SC2016
+        JQ_COMMAND_FILTER+='"$lte": {"$oid": $endid } , '  # single quotes to preserve $ for jq
+      fi
+      JQ_COMMAND_FILTER+="}"
+    fi
+    if [ "${USE_QUERY_FILE}" = true ]; then
+      JQ_COMMAND_FILE=${QUERY_FILE}
+    else
+      JQ_COMMAND_FILE="-n"
+    fi
+
+    JQ_COMMAND="jq -c ${JQ_COMMAND_ARG} '. + {${JQ_COMMAND_FILTER}}' ${JQ_COMMAND_FILE}"
+    JQ_RESULT=$(eval "${JQ_COMMAND}")
+    MONGO_COMMAND+="--query='${JQ_RESULT}' "
   fi
-  MONGO_COMMAND+=${QUERY_STRING}
+
   if [ "${USE_FIELDS}" = true ]; then
     MONGO_COMMAND+="--fields='${FIELDS}' "
   fi
