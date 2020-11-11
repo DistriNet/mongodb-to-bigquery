@@ -23,7 +23,7 @@ help() {
   \t    --end-time <timestamp>\tOnly retrieve records created before the given timestamp since epoch
   \t    (Supported combination: (query-file) and/or (start-id or start-time) and/or (end-id or end-id))\n"
   printf "\t* Limit field retrieval from MongoDB:
-  \t    -f/--fields <fields>\t\tFields to include in the export
+  \t    -f/--fields <fields>\t\tFields to include in the export\n"
   printf "\t* Schema definition:
   \t    -b/--infer-schema-bigquery\t\tLet BigQuery infer schema (on a sample of 100)
   \t    -l/--infer-schema-local\t\tInfer schema locally (on full dataset)
