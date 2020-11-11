@@ -21,7 +21,6 @@ help() {
   \t    -t/--incremental-time <timestamp>\tOnly retrieve records created after the given timestamp since epoch\n"
   printf "\t* Limit field retrieval from MongoDB:
   \t    -f/--fields <fields>\t\tFields to include in the export
-  \t    --field-file <file>\t\t\tFile with fields to include in the export (1 field per line)\n"
   printf "\t* Schema definition:
   \t    -b/--infer-schema-bigquery\t\tLet BigQuery infer schema (on a sample of 100)
   \t    -l/--infer-schema-local\t\tInfer schema locally (on full dataset)
@@ -121,15 +120,6 @@ while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org
       shift
     else
       die 'ERROR: "--fields" requires a non-empty option argument.'
-    fi
-    ;;
-  --field-file)
-    USE_FIELD_FILE=true
-    if [ "$2" ]; then
-      FIELD_FILE=$2
-      shift
-    else
-      die 'ERROR: "--field-file" requires a non-empty option argument.'
     fi
     ;;
   -q | --query-file)
@@ -269,9 +259,6 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
   MONGO_COMMAND+=${QUERY_STRING}
   if [ "${USE_FIELDS}" = true ]; then
     MONGO_COMMAND+="--fields='${FIELDS}' "
-  fi
-  if [ "${USE_FIELD_FILE}" = true ]; then
-    MONGO_COMMAND+="--fieldFile=${FIELD_FILE} "
   fi
   if [ "${TEST_MODE}" = true ]; then
     MONGO_COMMAND+="--limit 10000 "
