@@ -230,7 +230,7 @@ else
   BQ_TABLE=$5
 fi
 
-BQ_LOCATION="europe-west2"
+BQ_LOCATION="US"
 SUFFIX=".json.gz"
 
 # TODO improve file handling with suffix

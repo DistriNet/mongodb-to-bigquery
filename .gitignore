@@ -2,5 +2,7 @@ venv/
 
 *.json
 *.json.gz
+*.jsonl
+*.jsonl.gz
 
 /.idea/
