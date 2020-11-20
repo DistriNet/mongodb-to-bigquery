@@ -6,3 +6,5 @@ venv/
 *.jsonl.gz
 
 /.idea/
+
+test*
