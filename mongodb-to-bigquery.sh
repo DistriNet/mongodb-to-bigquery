@@ -266,7 +266,7 @@ else
 fi
 
 if [ "${USE_LOCAL_FILE}" = false ]; then
-  echo -e "${BROWN}[*] Retrieving data from MongoDB collection=${MONGO_COLLECTION} ${NC}"
+  echo -e "${BROWN}[*] Retrieving data from MongoDB collection ${MONGO_COLLECTION} ${NC}"
   MONGO_COMMAND="mongoexport --uri=${MONGO_URI} --collection=${MONGO_COLLECTION} --type=json "
 
   if [ "${USE_QUERY_FILE}" = true ] || [ "${USE_START_ID}" = true ] || [ "${USE_START_TIME}" = true ] || [ "${USE_END_ID}" = true ] || [ "${USE_END_TIME}" = true ]; then
@@ -275,15 +275,9 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
       # https://stackoverflow.com/a/8753670/7391782
       START_ID=$(printf '%x\n' "${START_TIME}")0000000000000000
     fi
-    if [ "${USE_START_ID}" = true ] || [ "${USE_START_TIME}" = true ]; then
-      QUERY_STRING="--query='{ \"_id\": { \"\$gte\": {\"\$oid\": \"${START_ID}\" } } }' "
-    fi
     if [ "${USE_END_TIME}" = true ]; then
       # https://stackoverflow.com/a/8753670/7391782
       END_ID=$(printf '%x\n' "${END_TIME}")0000000000000000
-    fi
-    if [ "${USE_END_ID}" = true ] || [ "${USE_END_TIME}" = true ]; then
-      QUERY_STRING="--query='{ \"_id\": { \"\$gte\": {\"\$oid\": \"${END_ID}\" } } }' "
     fi
 
     JQ_COMMAND_ARG=""
@@ -310,8 +304,8 @@ if [ "${USE_LOCAL_FILE}" = false ]; then
     fi
 
     JQ_COMMAND="jq -c ${JQ_COMMAND_ARG} '. + {${JQ_COMMAND_FILTER}}' ${JQ_COMMAND_FILE}"
-    JQ_RESULT=$(eval "${JQ_COMMAND}")
-    MONGO_COMMAND+="--query='${JQ_RESULT}' "
+    QUERY_STRING=$(eval "${JQ_COMMAND}")
+    MONGO_COMMAND+="--query='${QUERY_STRING}' "
   fi
 
   if [ "${USE_FIELDS}" = true ]; then
@@ -401,13 +395,14 @@ echo -e "${GREEN}[+] Data retrieved successfully! ${NC}"
 # won't be solved by schema generator: https://github.com/bxparks/bigquery-schema-generator/issues/39
 # TODO  --sanitize_names ? (this won't be applied to the data though?)
 
+# TODO do local inference (for schema file) but only across a subset of records
+
 if [ $USE_LOCAL_SCHEMA_INFERENCE = true ]; then
   # infer BigQuery schema across whole file (not 100 record sample) using https://pypi.org/project/bigquery-schema-generator/
   echo -e "${BROWN}[*] Generating BigQuery schema ${NC}"
   # no quotes for ls: we WANT globbing
   # shellcheck disable=SC2086
-  ls -1 ${DATA_FILE_GLOB} | xargs pigz -dc | venv/bin/generate-schema >"${SCHEMA_FILENAME}" || die "${RED}[-] Failed to generate schema! ${NC}"
-  # TODO add --ignore_invalid_lines once update to generator is released
+  ls -1 ${DATA_FILE_GLOB} | xargs pigz -dc | venv/bin/generate-schema --ignore_invalid_lines >"${SCHEMA_FILENAME}" || die "${RED}[-] Failed to generate schema! ${NC}"
 fi
 if [ ! -s "${SCHEMA_FILENAME}" ] && [ "${USE_BIGQUERY_SCHEMA_INFERENCE}" = false ]; then
   die "${RED}[-] Schema file does not exist ${NC}"
@@ -443,7 +438,11 @@ fi
 if [ $USE_TIME_PARTITIONING = true ]; then
     if ! bq show "${BQ_PROJECTID}":"${BQ_DATASET}.${BQ_TABLE}" >/dev/null; then
       echo -e "${BROWN}[*] Creating time partitioned table ${NC}"
-      BQ_TABLE_CREATION_COMMAND="bq mk -t --schema ${SCHEMA_FILENAME} --time_partitioning_field ${TIME_PARTITIONING_FIELD} "
+      BQ_TABLE_CREATION_COMMAND="bq mk -t "
+      if [ -s "${SCHEMA_FILENAME}" ]; then
+        BQ_TABLE_CREATION_COMMAND+="--schema ${SCHEMA_FILENAME} "
+      fi
+      BQ_TABLE_CREATION_COMMAND+="--time_partitioning_field ${TIME_PARTITIONING_FIELD} "
       BQ_TABLE_CREATION_COMMAND+="--time_partitioning_type DAY --project_id=${BQ_PROJECTID} ${BQ_PROJECTID}:${BQ_DATASET}.${BQ_TABLE} "
       eval "${BQ_TABLE_CREATION_COMMAND}" || die "${RED}[-] Failed to create table! ${NC}"
       echo -e "${GREEN}[+] Table created! ${NC}"
