@@ -1,4 +1,4 @@
-# requires: Python package `bigquery-schema-generator` in `venv`; `google-cloud-sdk` in $PATH
+# requires: running script in correct virtualenv; Python package `bigquery-schema-generator` in virtualenv; `google-cloud-sdk` in $PATH
 { # Ensure script is ingested/executed as a whole
   # https://unix.stackexchange.com/questions/331837/how-to-read-the-whole-shell-script-before-executing-it
 RED='\033[0;31m'
@@ -408,7 +408,7 @@ if [ $USE_LOCAL_SCHEMA_INFERENCE = true ]; then
   # no quotes for ls: we WANT globbing
   # default value of -0 for LOCAL_SCHEMA_INFERENCE_SAMPLE_SIZE yields full file
   # shellcheck disable=SC2086
-  ls -1 ${DATA_FILE_GLOB} | xargs pigz -dc | head -n ${LOCAL_SCHEMA_INFERENCE_SAMPLE_SIZE} | venv/bin/generate-schema --ignore_invalid_lines >"${SCHEMA_FILENAME}" || die "${RED}[-] Failed to generate schema! ${NC}"
+  ls -1 ${DATA_FILE_GLOB} | xargs pigz -dc | head -n ${LOCAL_SCHEMA_INFERENCE_SAMPLE_SIZE} | generate-schema --ignore_invalid_lines >"${SCHEMA_FILENAME}" || die "${RED}[-] Failed to generate schema! ${NC}"
 fi
 if [ ! -s "${SCHEMA_FILENAME}" ] && [ "${USE_BIGQUERY_SCHEMA_INFERENCE}" = false ]; then
   die "${RED}[-] Schema file does not exist ${NC}"
