@@ -26,7 +26,7 @@ help() {
   \t    -f/--fields <fields>\t\tFields to include in the export\n"
   printf "\t* Schema definition:
   \t    -b/--infer-schema-bigquery\t\tLet BigQuery infer schema (on a sample of 100)
-  \t    -l/--infer-schema-local\t\tInfer schema locally (on full dataset)
+  \t    -l/--infer-schema-local <sample-size>\t\tInfer schema locally on a sample of records (leave empty to use full dataset)
   \t    -s/--schema-file <file>\t\tUse schema in provided file\n"
   printf "\t-c/--google-cloud-storage <bucket>\tStage data in given Google Cloud Storage bucket before loading into BigQuery\n"
   printf "\t-p/--time-partitioning <field>\t\tSet time partioning on given field\n"
@@ -53,6 +53,7 @@ USE_GOOGLE_CLOUD_STORAGE=false
 GOOGLE_CLOUD_STORAGE_BUCKET=
 USE_BIGQUERY_SCHEMA_INFERENCE=false
 USE_LOCAL_SCHEMA_INFERENCE=false
+LOCAL_SCHEMA_INFERENCE_SAMPLE_SIZE=-0
 USE_LOCAL_SCHEMA_FILE=false
 LOCAL_SCHEMA_FILE=
 USE_TIME_PARTITIONING=false
@@ -106,6 +107,12 @@ while :; do # https://unix.stackexchange.com/a/331530 http://mywiki.wooledge.org
     ;;
   -l | --infer-schema-local)
     USE_LOCAL_SCHEMA_INFERENCE=true
+    if [ "$2" ]; then
+      LOCAL_SCHEMA_INFERENCE_SAMPLE_SIZE=$2
+      shift
+    else
+      LOCAL_SCHEMA_INFERENCE_SAMPLE_SIZE=-0
+    fi
     ;;
   -s | --schema-file)
     USE_LOCAL_SCHEMA_FILE=true
@@ -395,14 +402,13 @@ echo -e "${GREEN}[+] Data retrieved successfully! ${NC}"
 # won't be solved by schema generator: https://github.com/bxparks/bigquery-schema-generator/issues/39
 # TODO  --sanitize_names ? (this won't be applied to the data though?)
 
-# TODO do local inference (for schema file) but only across a subset of records
-
 if [ $USE_LOCAL_SCHEMA_INFERENCE = true ]; then
-  # infer BigQuery schema across whole file (not 100 record sample) using https://pypi.org/project/bigquery-schema-generator/
+  # infer BigQuery schema using https://pypi.org/project/bigquery-schema-generator/
   echo -e "${BROWN}[*] Generating BigQuery schema ${NC}"
   # no quotes for ls: we WANT globbing
+  # default value of -0 for LOCAL_SCHEMA_INFERENCE_SAMPLE_SIZE yields full file
   # shellcheck disable=SC2086
-  ls -1 ${DATA_FILE_GLOB} | xargs pigz -dc | venv/bin/generate-schema --ignore_invalid_lines >"${SCHEMA_FILENAME}" || die "${RED}[-] Failed to generate schema! ${NC}"
+  ls -1 ${DATA_FILE_GLOB} | xargs pigz -dc | head -n ${LOCAL_SCHEMA_INFERENCE_SAMPLE_SIZE} | venv/bin/generate-schema --ignore_invalid_lines >"${SCHEMA_FILENAME}" || die "${RED}[-] Failed to generate schema! ${NC}"
 fi
 if [ ! -s "${SCHEMA_FILENAME}" ] && [ "${USE_BIGQUERY_SCHEMA_INFERENCE}" = false ]; then
   die "${RED}[-] Schema file does not exist ${NC}"
